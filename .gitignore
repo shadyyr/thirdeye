@@ -50,3 +50,12 @@ bus.jpg
 *.bak
 *.bak_*
 *_backup_*.py
+
+# Third Eye runtime output: event database, recordings, local backups
+data/
+*.sqlite3
+*.sqlite3-*
+*.jsonl
+*.mp4
+*.mp4.times
+backups/
