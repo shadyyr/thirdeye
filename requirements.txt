@@ -1,0 +1,5 @@
+# Base software-only path intentionally has no required third-party packages.
+# Install only the adapters needed for the current machine:
+#   pip install -e ".[vision,dashboard,serial,dev]"
+
+-e .

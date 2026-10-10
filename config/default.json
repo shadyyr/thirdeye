@@ -1,0 +1,75 @@
+{
+  "application": {
+    "log_level": "INFO",
+    "debug": false
+  },
+  "cameras": {
+    "front": {
+      "source_type": "mock",
+      "source": "0",
+      "mirror_horizontal": false
+    },
+    "rear": {
+      "source_type": "mock",
+      "source": "1",
+      "mirror_horizontal": false
+    }
+  },
+  "detector": {
+    "backend": "mock",
+    "model": "",
+    "confidence_threshold": 0.45,
+    "tracked_classes": ["person"]
+  },
+  "tracking": {
+    "iou_match_threshold": 0.25,
+    "max_missed_frames": 10,
+    "history_size": 12
+  },
+  "direction": {
+    "left_boundary": 0.35,
+    "right_boundary": 0.65,
+    "camera_mappings": {
+      "front": {
+        "left": "LEFT",
+        "center": "FRONT",
+        "right": "RIGHT"
+      },
+      "rear": {
+        "left": "LEFT",
+        "center": "REAR",
+        "right": "RIGHT"
+      }
+    }
+  },
+  "motion": {
+    "minimum_samples": 4,
+    "smoothing_window": 6,
+    "area_change_threshold": 0.12
+  },
+  "salience": {
+    "class_weights": {
+      "person": 1.0
+    },
+    "weights": {
+      "class": 0.1,
+      "approach": 0.35,
+      "closeness": 0.2,
+      "centrality": 0.15,
+      "motion": 0.1,
+      "persistence": 0.1
+    },
+    "close_area_fraction": 0.16,
+    "persistence_frames": 5,
+    "alert_threshold": 0.45,
+    "selection_hold_seconds": 0.8,
+    "switch_margin": 0.12,
+    "minimum_intensity": 25
+  },
+  "haptics": {
+    "transport": "mock",
+    "serial_port": "/dev/ttyUSB0",
+    "baud_rate": 115200,
+    "command_timeout_seconds": 0.6
+  }
+}

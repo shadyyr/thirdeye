@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "third-eye"
+version = "0.1.0"
+description = "Local spatial-awareness pipeline for the Third Eye accessibility prototype."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+vision = [
+  "opencv-python>=4.8",
+  "ultralytics>=8.0",
+]
+dashboard = ["fastapi>=0.110", "uvicorn[standard]>=0.27"]
+serial = ["pyserial>=3.5"]
+dev = ["ruff>=0.5"]
+
+[project.scripts]
+thirdeye = "thirdeye.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

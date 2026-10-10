@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Local configuration and runtime data
+config/local.json
+*.log
+recordings/
+models/
+
+# Editors and operating systems
+.DS_Store
+.vscode/
+.idea/
+
+# PlatformIO / Arduino build output
+esp32/.pio/
+esp32/build/
