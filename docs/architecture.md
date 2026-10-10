@@ -45,3 +45,7 @@ This is intentionally heuristic rather than learned: it can be explained to judg
 ## Adapter boundaries
 
 OpenCV, Ultralytics, FastAPI, Uvicorn, and pyserial are optional. The default code path imports none of them. TensorRT is not required or referenced by the runtime path. When Jetson optimization becomes necessary, it should be implemented as another detector adapter with the same `Detector` contract.
+
+## Rehearsal mode
+
+`simulation/scenarios.py` provides named, finite timelines of normalized mock objects. They use the same `MockCameraSource` and `MockDetector` contracts as the ordinary software-only path, then run through tracking, motion, salience, direction, selection, haptics, and dashboard state. This is a regression harness, not a substitute for live camera validation.

@@ -41,7 +41,16 @@ def load_config_with_override(
 
 
 def validate_config(config: dict[str, Any]) -> None:
-    required = {"cameras", "detector", "tracking", "direction", "motion", "salience", "haptics"}
+    required = {
+        "cameras",
+        "detector",
+        "tracking",
+        "direction",
+        "motion",
+        "salience",
+        "haptics",
+        "simulation",
+    }
     missing = required - config.keys()
     if missing:
         raise ValueError(f"Configuration is missing required sections: {sorted(missing)}")
@@ -59,3 +68,5 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("salience alert_threshold must be between 0 and 1")
     if not 0 <= salience["minimum_intensity"] <= 100:
         raise ValueError("salience minimum_intensity must be between 0 and 100")
+    if config["simulation"]["frame_interval_seconds"] < 0:
+        raise ValueError("simulation frame_interval_seconds cannot be negative")

@@ -61,15 +61,30 @@ class _Selection:
 class PrioritySelector:
     """Select one alert-worthy event, resisting distracting rapid object switching."""
 
-    def __init__(self, alert_threshold: float, hold_seconds: float, switch_margin: float) -> None:
+    def __init__(
+        self,
+        alert_threshold: float,
+        hold_seconds: float,
+        switch_margin: float,
+        require_approaching_for_alert: bool = True,
+    ) -> None:
         self.alert_threshold = alert_threshold
         self.hold_seconds = hold_seconds
         self.switch_margin = switch_margin
+        self.require_approaching_for_alert = require_approaching_for_alert
         self._selection: _Selection | None = None
 
     def select(self, events: list[ScoredEvent], now: float | None = None) -> ScoredEvent | None:
         now = time.monotonic() if now is None else now
-        candidates = [event for event in events if event.relevance_score >= self.alert_threshold]
+        candidates = [
+            event
+            for event in events
+            if event.relevance_score >= self.alert_threshold
+            and (
+                not self.require_approaching_for_alert
+                or event.track.motion_state == MotionState.APPROACHING
+            )
+        ]
         candidate = max(candidates, key=lambda event: event.relevance_score, default=None)
         if candidate is None:
             self._selection = None

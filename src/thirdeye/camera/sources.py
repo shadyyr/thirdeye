@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,11 +29,33 @@ class CameraSource(ABC):
 
 
 @dataclass(frozen=True)
+class MockObject:
+    """A deterministic, normalized object used to exercise the full decision path."""
+
+    object_key: str
+    class_name: str
+    confidence: float
+    center_x: float
+    center_y: float
+    area_fraction: float
+    aspect_ratio: float = 0.45
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.center_x <= 1 or not 0 <= self.center_y <= 1:
+            raise ValueError("Mock object centers must be normalized between 0 and 1")
+        if not 0 < self.area_fraction <= 1:
+            raise ValueError("Mock object area_fraction must be between 0 and 1")
+        if self.aspect_ratio <= 0:
+            raise ValueError("Mock object aspect_ratio must be positive")
+
+
+@dataclass(frozen=True)
 class MockFrame:
     """Dependency-free frame payload used by the software-only demo pipeline."""
 
     scene: str
     index: int
+    objects: tuple[MockObject, ...] = ()
 
 
 class MockCameraSource(CameraSource):
@@ -43,12 +66,14 @@ class MockCameraSource(CameraSource):
         width: int = 1280,
         height: int = 720,
         scene: str = "approaching_person",
+        scripted_objects: Sequence[Sequence[MockObject]] | None = None,
         max_frames: int | None = None,
     ) -> None:
         self.source_camera = source_camera
         self.width = width
         self.height = height
         self.scene = scene
+        self.scripted_objects = scripted_objects
         self.max_frames = max_frames
         self._frame_index = 0
         self._started = False
@@ -61,12 +86,19 @@ class MockCameraSource(CameraSource):
             raise RuntimeError("Camera source must be started before reading")
         if self.max_frames is not None and self._frame_index >= self.max_frames:
             return None
+        if self.scripted_objects is not None and self._frame_index >= len(self.scripted_objects):
+            return None
+        objects = (
+            tuple(self.scripted_objects[self._frame_index])
+            if self.scripted_objects is not None
+            else self._default_objects()
+        )
         packet = FramePacket(
             source_camera=self.source_camera,
             timestamp=time.monotonic(),
             width=self.width,
             height=self.height,
-            payload=MockFrame(scene=self.scene, index=self._frame_index),
+            payload=MockFrame(scene=self.scene, index=self._frame_index, objects=objects),
             frame_index=self._frame_index,
         )
         self._frame_index += 1
@@ -74,6 +106,33 @@ class MockCameraSource(CameraSource):
 
     def close(self) -> None:
         self._started = False
+
+    def _default_objects(self) -> tuple[MockObject, ...]:
+        """Retain a useful direct-instantiation default outside named rehearsal scenarios."""
+        if self.scene == "empty":
+            return ()
+        if self.source_camera == CameraName.REAR:
+            return (
+                MockObject(
+                    object_key="rear-background",
+                    class_name="person",
+                    confidence=0.91,
+                    center_x=0.48,
+                    center_y=0.45,
+                    area_fraction=0.005,
+                ),
+            )
+        area = min(0.16, 0.015 + self._frame_index * 0.009)
+        return (
+            MockObject(
+                object_key="front-approaching",
+                class_name="person",
+                confidence=0.91,
+                center_x=0.68,
+                center_y=0.45,
+                area_fraction=area,
+            ),
+        )
 
 
 class OpenCVCameraSource(CameraSource):

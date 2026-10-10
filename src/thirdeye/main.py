@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from threading import Thread
 from typing import Any
 
@@ -21,21 +21,58 @@ from thirdeye.haptics import HapticController, MockHapticTransport, SerialHaptic
 from thirdeye.models import CameraName, DirectionZone, Track
 from thirdeye.perception import MockDetector, UltralyticsDetector
 from thirdeye.salience import PrioritySelector, RelevanceScorer
-from thirdeye.spatial import DirectionMapper, MotionAnalyzer
+from thirdeye.simulation import MockScenario, get_scenario, scenario_names
+from thirdeye.spatial import DirectionMapper, MotionAnalyzer, format_orientation_report
 from thirdeye.tracking import SimpleTracker
 
 LOGGER = logging.getLogger(__name__)
 
 
-def build_camera_manager(config: dict[str, Any], max_frames: int | None) -> CameraManager:
+@dataclass(frozen=True)
+class PipelineDecision:
+    frame_index: int
+    selected_track_id: str | None
+    motion_state: str | None
+    relevance_score: float | None
+    command_zone: DirectionZone
+    command_intensity: int
+
+
+@dataclass(frozen=True)
+class PipelineResult:
+    scenario_name: str | None
+    frames_processed: int
+    decisions: tuple[PipelineDecision, ...]
+
+    @property
+    def alert_zones(self) -> tuple[DirectionZone, ...]:
+        return tuple(
+            decision.command_zone
+            for decision in self.decisions
+            if decision.command_zone != DirectionZone.STOP
+        )
+
+
+def build_camera_manager(
+    config: dict[str, Any],
+    max_frames: int | None,
+    scenario: MockScenario | None = None,
+) -> CameraManager:
     sources = []
     for camera_name in CameraName:
         camera_config = config["cameras"][camera_name.value]
         source_type = camera_config["source_type"]
         source = camera_config["source"]
         if source_type == "mock":
+            if scenario is None:
+                scenario = get_scenario(config["simulation"]["scenario"])
             sources.append(
-                MockCameraSource(camera_name, scene="approaching_person", max_frames=max_frames)
+                MockCameraSource(
+                    camera_name,
+                    scene=scenario.name,
+                    scripted_objects=scenario.frames_for(camera_name),
+                    max_frames=max_frames,
+                )
             )
         elif source_type == "video":
             sources.append(VideoFileCameraSource(camera_name, source))
@@ -81,9 +118,14 @@ def run_pipeline(
     *,
     max_frames: int | None = None,
     dashboard_state: DashboardState | None = None,
-) -> None:
+) -> PipelineResult:
     """Run the full camera-to-haptic path. All default adapters work without hardware."""
-    camera_manager = build_camera_manager(config, max_frames)
+    scenario = (
+        get_scenario(config["simulation"]["scenario"])
+        if any(item["source_type"] == "mock" for item in config["cameras"].values())
+        else None
+    )
+    camera_manager = build_camera_manager(config, max_frames, scenario)
     detector = build_detector(config)
     tracking_config = config["tracking"]
     trackers = {
@@ -101,10 +143,14 @@ def run_pipeline(
         alert_threshold=config["salience"]["alert_threshold"],
         hold_seconds=config["salience"]["selection_hold_seconds"],
         switch_margin=config["salience"]["switch_margin"],
+        require_approaching_for_alert=config["salience"]["require_approaching_for_alert"],
     )
     haptics = build_haptic_controller(config)
     dashboard_state = dashboard_state or DashboardState()
     frame_times: list[float] = []
+    decisions: list[PipelineDecision] = []
+    frame_index = 0
+    playback_interval = config["simulation"]["frame_interval_seconds"]
 
     try:
         with camera_manager:
@@ -145,6 +191,22 @@ def run_pipeline(
 
                 selected_event = selector.select(events)
                 command = haptics.send_for(selected_event)
+                decisions.append(
+                    PipelineDecision(
+                        frame_index=frame_index,
+                        selected_track_id=(
+                            None if selected_event is None else selected_event.track_id
+                        ),
+                        motion_state=None
+                        if selected_event is None
+                        else selected_event.track.motion_state.value,
+                        relevance_score=None
+                        if selected_event is None
+                        else selected_event.relevance_score,
+                        command_zone=command.zone,
+                        command_intensity=command.intensity,
+                    )
+                )
                 elapsed = time.monotonic() - loop_started
                 frame_times.append(elapsed)
                 _update_dashboard(
@@ -156,11 +218,21 @@ def run_pipeline(
                     command.intensity,
                     elapsed,
                     frame_times,
+                    scenario.name if scenario is not None else None,
+                    frame_index,
                 )
+                frame_index += 1
+                if playback_interval > 0:
+                    time.sleep(playback_interval)
     except KeyboardInterrupt:
         LOGGER.info("Pipeline interrupted")
     finally:
         haptics.close()
+    return PipelineResult(
+        scenario_name=None if scenario is None else scenario.name,
+        frames_processed=frame_index,
+        decisions=tuple(decisions),
+    )
 
 
 def _update_dashboard(
@@ -172,11 +244,17 @@ def _update_dashboard(
     intensity: int,
     latency_seconds: float,
     frame_times: list[float],
+    scenario_name: str | None,
+    frame_index: int,
 ) -> None:
     average = sum(frame_times[-30:]) / min(len(frame_times), 30)
     state.update(
         {
             "status": "running",
+            "replay": {
+                "scenario": scenario_name,
+                "frame_index": frame_index,
+            },
             "cameras": {
                 frame.source_camera.value: {
                     "frame_index": frame.frame_index,
@@ -256,6 +334,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--host", default="127.0.0.1", help="Dashboard host")
     parser.add_argument("--port", type=int, default=8000, help="Dashboard port")
+    parser.add_argument("--scenario", help="Named deterministic mock scenario")
+    parser.add_argument(
+        "--list-scenarios",
+        action="store_true",
+        help="List available mock scenarios",
+    )
+    parser.add_argument(
+        "--replay",
+        action="store_true",
+        help="Slow mock playback for dashboard rehearsal",
+    )
+    parser.add_argument(
+        "--calibrate-orientation",
+        action="store_true",
+        help="Print camera-to-belt calibration checks and exit",
+    )
     return parser.parse_args()
 
 
@@ -266,6 +360,19 @@ def main() -> None:
         level=getattr(logging, config["application"]["log_level"].upper()),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    if args.list_scenarios:
+        for scenario_name in scenario_names():
+            scenario = get_scenario(scenario_name)
+            print(f"{scenario.name}: {scenario.description}")
+        return
+    if args.scenario:
+        get_scenario(args.scenario)
+        config["simulation"]["scenario"] = args.scenario
+    if args.replay:
+        config["simulation"]["frame_interval_seconds"] = 0.5
+    if args.calibrate_orientation:
+        print(format_orientation_report(config))
+        return
     state = DashboardState()
     if args.dashboard:
         start_dashboard(state, args.host, args.port)
@@ -274,6 +381,13 @@ def main() -> None:
         max_frames=None if args.frames == 0 else args.frames,
         dashboard_state=state,
     )
+    if args.dashboard:
+        LOGGER.info("Replay complete; dashboard remains available until interrupted")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            LOGGER.info("Dashboard interrupted")
 
 
 if __name__ == "__main__":

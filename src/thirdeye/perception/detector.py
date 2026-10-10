@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from thirdeye.camera.sources import MockFrame
+from thirdeye.camera.sources import MockFrame, MockObject
 from thirdeye.models import BoundingBox, Detection, FramePacket
 
 
@@ -24,29 +24,23 @@ class MockDetector(Detector):
     def detect(self, frame: FramePacket) -> list[Detection]:
         if not isinstance(frame.payload, MockFrame):
             return []
-        if frame.payload.scene == "empty":
-            return []
+        return [self._to_detection(frame, mock_object) for mock_object in frame.payload.objects]
 
-        progress = min(frame.frame_index, 20)
-        if frame.source_camera.value == "front":
-            width = 80 + progress * 11
-            height = 170 + progress * 15
-            x = frame.width * 0.68 - width / 2
-        else:
-            # Rear is present for dashboard visibility but deliberately lower salience.
-            width, height = 45, 95
-            x = frame.width * 0.48 - width / 2
-        y = frame.height * 0.3
-        return [
-            Detection(
-                class_name="person",
-                confidence=self.confidence,
-                source_camera=frame.source_camera,
-                bounding_box=BoundingBox(x=x, y=y, width=width, height=height),
-                frame_width=frame.width,
-                frame_height=frame.height,
-            )
-        ]
+    def _to_detection(self, frame: FramePacket, mock_object: MockObject) -> Detection:
+        normalized_width = (mock_object.area_fraction * mock_object.aspect_ratio) ** 0.5
+        normalized_height = normalized_width / mock_object.aspect_ratio
+        width = normalized_width * frame.width
+        height = normalized_height * frame.height
+        x = mock_object.center_x * frame.width - width / 2
+        y = mock_object.center_y * frame.height - height / 2
+        return Detection(
+            class_name=mock_object.class_name,
+            confidence=mock_object.confidence,
+            source_camera=frame.source_camera,
+            bounding_box=BoundingBox(x=x, y=y, width=width, height=height),
+            frame_width=frame.width,
+            frame_height=frame.height,
+        )
 
 
 class UltralyticsDetector(Detector):

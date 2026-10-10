@@ -3,6 +3,10 @@
     "log_level": "INFO",
     "debug": false
   },
+  "simulation": {
+    "scenario": "front_right_approach",
+    "frame_interval_seconds": 0.0
+  },
   "cameras": {
     "front": {
       "source_type": "mock",
@@ -62,6 +66,7 @@
     "close_area_fraction": 0.16,
     "persistence_frames": 5,
     "alert_threshold": 0.45,
+    "require_approaching_for_alert": true,
     "selection_hold_seconds": 0.8,
     "switch_margin": 0.12,
     "minimum_intensity": 25

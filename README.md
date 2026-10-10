@@ -80,6 +80,18 @@ PYTHONPATH=src python -m thirdeye.main --frames 300 --dashboard
 
 The dashboard is intentionally a scaffold at this stage: it displays the live pipeline state JSON and the decision flow, rather than finalized video overlays.
 
+### Rehearse decisions without hardware
+
+Named mock scenarios make the demo-critical rules repeatable:
+
+```bash
+thirdeye --list-scenarios
+thirdeye --scenario competing_people --frames 0
+thirdeye --calibrate-orientation
+```
+
+See [software rehearsal](docs/software-rehearsal.md) for scenario expectations, dashboard replay, and camera-orientation calibration.
+
 ## Configure real adapters later
 
 Keep `config/default.json` intact and create `config/local.json` with only local changes:
@@ -113,6 +125,7 @@ The initial firmware is in [`esp32/firmware/third_eye_haptics.ino`](esp32/firmwa
 - [Jetson setup checklist](docs/jetson-setup.md)
 - [Live demo plan](docs/demo-plan.md)
 - [Judging strategy](docs/judging-strategy.md)
+- [Software rehearsal](docs/software-rehearsal.md)
 
 ## Team roles
 

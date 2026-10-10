@@ -39,7 +39,12 @@ class SalienceTests(unittest.TestCase):
     def test_priority_selects_best_eligible_event(self) -> None:
         lower = ScoredEvent(make_track(track_id="front-001"), DirectionZone.FRONT, 0.55, {})
         higher = ScoredEvent(make_track(track_id="rear-001"), DirectionZone.REAR, 0.75, {})
-        selector = PrioritySelector(alert_threshold=0.45, hold_seconds=1.0, switch_margin=0.12)
+        selector = PrioritySelector(
+            alert_threshold=0.45,
+            hold_seconds=1.0,
+            switch_margin=0.12,
+            require_approaching_for_alert=False,
+        )
 
         selected = selector.select([lower, higher], now=10.0)
 
@@ -49,13 +54,24 @@ class SalienceTests(unittest.TestCase):
     def test_priority_holds_current_object_without_material_improvement(self) -> None:
         current = ScoredEvent(make_track(track_id="front-001"), DirectionZone.FRONT, 0.70, {})
         nearby = ScoredEvent(make_track(track_id="rear-001"), DirectionZone.REAR, 0.76, {})
-        selector = PrioritySelector(alert_threshold=0.45, hold_seconds=1.0, switch_margin=0.12)
+        selector = PrioritySelector(
+            alert_threshold=0.45,
+            hold_seconds=1.0,
+            switch_margin=0.12,
+            require_approaching_for_alert=False,
+        )
         selector.select([current], now=10.0)
 
         selected = selector.select([current, nearby], now=10.2)
 
         self.assertIsNotNone(selected)
         self.assertEqual(selected.track_id, "front-001")
+
+    def test_default_selector_ignores_non_approaching_events(self) -> None:
+        stationary = ScoredEvent(make_track(), DirectionZone.FRONT, 0.9, {})
+        selector = PrioritySelector(alert_threshold=0.45, hold_seconds=1.0, switch_margin=0.12)
+
+        self.assertIsNone(selector.select([stationary], now=10.0))
 
 
 if __name__ == "__main__":
