@@ -25,3 +25,28 @@ models/
 # PlatformIO / Arduino build output
 esp32/.pio/
 esp32/build/
+
+# Motion calibration / debug CSV exports
+motion_debug.csv
+still.csv
+toward.csv
+away.csv
+away2.csv
+slowapproach.csv
+slowapproach(1).csv
+slowmoveaway.csv
+*motion*.csv
+*approach*.csv
+*away*.csv
+still*.csv
+toward*.csv
+
+# YOLO runtime output, downloaded weights and sample images
+runs/
+*.pt
+bus.jpg
+
+# Local backups and temporary copies
+*.bak
+*.bak_*
+*_backup_*.py
