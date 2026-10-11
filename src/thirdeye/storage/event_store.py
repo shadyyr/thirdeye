@@ -23,6 +23,13 @@ CLI:
         [--type EVENT_TYPE] [--since-minutes N] [--json]
     python -m thirdeye.storage.event_store --entity 2 [--session ID]
     python -m thirdeye.storage.event_store --entities [--session ID]
+    python -m thirdeye.storage.event_store --incidents [--session ID]
+
+Incident clips (table ``incidents``, one row per recorded clip, written by
+``thirdeye.recording.incident_recorder.IncidentRecorder``):
+    SQLiteEventStore.upsert_incident(incident_dict)
+    SQLiteEventStore.incidents(session_id=None, limit=50, status=None)
+    SQLiteEventStore.incident(incident_id)
 """
 
 from __future__ import annotations
@@ -90,6 +97,25 @@ CREATE TABLE IF NOT EXISTS entities (
     PRIMARY KEY (session_id, entity_id)
 );
 CREATE INDEX IF NOT EXISTS idx_entities_last_seen ON entities(session_id, last_seen);
+CREATE TABLE IF NOT EXISTS incidents (
+    incident_id  TEXT PRIMARY KEY,
+    session_id   TEXT,
+    event_type   TEXT,
+    trigger_time REAL,
+    iso_time     TEXT,
+    clip_start   REAL,
+    clip_end     REAL,
+    event_ids    TEXT,
+    entity_ids   TEXT,
+    zone_id      TEXT,
+    file_path    TEXT,
+    frame_count  INTEGER,
+    bytes        INTEGER,
+    status       TEXT,
+    metadata     TEXT,
+    updated_at   REAL
+);
+CREATE INDEX IF NOT EXISTS idx_incidents_trigger ON incidents(session_id, trigger_time);
 """
 
 _ENTITY_COLUMNS = (
@@ -112,6 +138,26 @@ _ENTITY_COLUMNS = (
     "updated_at",
 )
 _ENTITY_JSON = ("last_bbox", "last_center", "event_ids")
+
+_INCIDENT_COLUMNS = (
+    "incident_id",
+    "session_id",
+    "event_type",
+    "trigger_time",
+    "iso_time",
+    "clip_start",
+    "clip_end",
+    "event_ids",
+    "entity_ids",
+    "zone_id",
+    "file_path",
+    "frame_count",
+    "bytes",
+    "status",
+    "metadata",
+    "updated_at",
+)
+_INCIDENT_JSON_LISTS = ("event_ids", "entity_ids")
 
 
 @runtime_checkable
@@ -352,6 +398,120 @@ class SQLiteEventStore:
             self._errors.report("session lookup", exc)
             own = None
         return self.session_id if own else self.latest_session()
+
+    # ------------------------------------------------------------------
+    # Incident clips
+    # ------------------------------------------------------------------
+    _UPSERT_INCIDENT = (
+        f"INSERT OR REPLACE INTO incidents ({', '.join(_INCIDENT_COLUMNS)}) "
+        f"VALUES ({', '.join('?' * len(_INCIDENT_COLUMNS))})"
+    )
+
+    def upsert_incident(self, incident: dict) -> None:
+        """Insert or replace one incident clip row (status recording/complete/failed)."""
+        try:
+            incident_id = incident.get("incident_id")
+            if not incident_id:
+                raise ValueError("incident without incident_id")
+            trigger_time = _opt_float(incident.get("trigger_time"))
+            try:
+                iso_time = (
+                    None if trigger_time is None
+                    else datetime.fromtimestamp(trigger_time).isoformat(timespec="milliseconds")
+                )
+            except (OverflowError, OSError, ValueError):
+                iso_time = None
+            entity_ids = [i for i in (_to_int(v) for v in incident.get("entity_ids") or []) if i is not None]
+            row = (
+                str(incident_id),
+                str(incident.get("session_id") or self.session_id),
+                _opt_str(incident.get("event_type")),
+                trigger_time,
+                iso_time,
+                _opt_float(incident.get("clip_start")),
+                _opt_float(incident.get("clip_end")),
+                _to_json([str(e) for e in incident.get("event_ids") or []]),
+                _to_json(entity_ids),
+                _opt_str(incident.get("zone_id")),
+                _opt_str(incident.get("file_path")),
+                _to_int(incident.get("frame_count")) or 0,
+                _to_int(incident.get("bytes")) or 0,
+                _opt_str(incident.get("status")),
+                _to_json(incident.get("metadata") or {}),
+                _to_float(incident.get("updated_at")),
+            )
+            with self._lock:
+                if self._conn is None:
+                    raise sqlite3.ProgrammingError("store is closed")
+                with self._conn:
+                    self._conn.execute(self._UPSERT_INCIDENT, row)
+        except Exception as exc:
+            self._errors.report("upsert_incident", exc)
+
+    def _incident_rows(self, where: str, params: list, limit: int) -> list[dict]:
+        sql = (
+            f"SELECT {', '.join(_INCIDENT_COLUMNS)} FROM incidents WHERE {where} "
+            "ORDER BY trigger_time DESC, rowid DESC LIMIT ?"
+        )
+        try:
+            with self._lock:
+                if self._conn is None:
+                    return []
+                rows = self._conn.execute(sql, [*params, int(limit)]).fetchall()
+        except Exception as exc:
+            self._errors.report("incidents query", exc)
+            return []
+        result = []
+        for row in rows:
+            item = dict(zip(_INCIDENT_COLUMNS, row))
+            for key in _INCIDENT_JSON_LISTS:
+                try:
+                    item[key] = json.loads(item[key]) if item[key] else []
+                except (TypeError, ValueError):
+                    item[key] = []
+            try:
+                item["metadata"] = json.loads(item["metadata"]) if item["metadata"] else {}
+            except (TypeError, ValueError):
+                item["metadata"] = {"raw": item["metadata"]}
+            result.append(item)
+        return result
+
+    def _default_incident_session(self) -> str | None:
+        """This store's own session if it has incidents, else the latest session with incidents."""
+        try:
+            with self._lock:
+                if self._conn is None:
+                    return None
+                own = self._conn.execute(
+                    "SELECT 1 FROM incidents WHERE session_id = ? LIMIT 1", [self.session_id]
+                ).fetchone()
+                if own:
+                    return self.session_id
+                row = self._conn.execute(
+                    "SELECT session_id FROM incidents WHERE session_id IS NOT NULL "
+                    "ORDER BY trigger_time DESC, rowid DESC LIMIT 1"
+                ).fetchone()
+            return None if row is None else row[0]
+        except Exception as exc:
+            self._errors.report("incident session lookup", exc)
+            return None
+
+    def incidents(
+        self, session_id: str | None = None, limit: int = 50, status: str | None = None
+    ) -> list[dict]:
+        """Incident clips of a session (own session, else the latest), newest first."""
+        session_id = session_id or self._default_incident_session()
+        if session_id is None:
+            return []
+        clauses, params = ["session_id = ?"], [session_id]
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        return self._incident_rows(" AND ".join(clauses), params, limit)
+
+    def incident(self, incident_id: str) -> dict | None:
+        rows = self._incident_rows("incident_id = ?", [str(incident_id)], 1)
+        return rows[0] if rows else None
 
     def _entity_rows(self, where: str, params: list, limit: int) -> list[dict]:
         sql = (
@@ -650,6 +810,42 @@ def _cli_entities(store: "SQLiteEventStore", args: argparse.Namespace) -> int:
     return 0
 
 
+def _cli_incidents(store: "SQLiteEventStore", args: argparse.Namespace) -> int:
+    rows = store.incidents(session_id=args.session, limit=max(args.recent, 1))
+    if args.json:
+        print(json.dumps(rows, indent=2, default=str))
+        return 0
+    session = rows[0]["session_id"] if rows else (args.session or "-")
+    print(f"Session {session}: {len(rows)} incident clips (newest first)")
+    if not rows:
+        return 0
+    headers = ("time", "type", "status", "length", "frames", "size", "events", "entities", "file")
+    table = []
+    for r in rows:
+        try:
+            length = f"{float(r['clip_end']) - float(r['clip_start']):.1f}s"
+        except (TypeError, ValueError):
+            length = "-"
+        table.append((
+            _fmt_time(r.get("trigger_time")),
+            str(r.get("event_type") or ""),
+            str(r.get("status") or ""),
+            length,
+            str(r.get("frame_count") or 0),
+            f"{(r.get('bytes') or 0) / 1e6:.1f}MB",
+            str(len(r.get("event_ids") or [])),
+            ",".join(str(e) for e in r.get("entity_ids") or []) or "-",
+            str(r.get("file_path") or "-"),
+        ))
+    widths = [max(len(h), *(len(row[i]) for row in table)) for i, h in enumerate(headers)]
+    fmt = "  ".join(f"{{:<{w}}}" for w in widths)
+    print(fmt.format(*headers))
+    print(fmt.format(*("-" * w for w in widths)))
+    for row in table:
+        print(fmt.format(*row))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m thirdeye.storage.event_store", description="Show stored Third Eye events."
@@ -662,12 +858,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--entity", type=int, default=None, metavar="ID",
                         help="where/when entity ID (e.g. Backpack #2 -> 2) was last seen, plus its events")
     parser.add_argument("--entities", action="store_true", help="list remembered entities of the session")
+    parser.add_argument("--incidents", action="store_true", help="list recorded incident clips of the session")
     parser.add_argument("--session", default=None, help="session id (default: latest session)")
     args = parser.parse_args(argv)
 
     if not os.path.exists(args.db):
         print(f"No event database at {args.db}", file=sys.stderr)
         return 1
+    if args.incidents:
+        store = SQLiteEventStore(args.db, session_id="cli")
+        try:
+            return _cli_incidents(store, args)
+        finally:
+            store.close()
     if args.entity is not None or args.entities:
         store = SQLiteEventStore(args.db, session_id="cli")
         try:

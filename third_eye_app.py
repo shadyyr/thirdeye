@@ -12,6 +12,7 @@ Usage:
     python third_eye_app.py --record demo.mp4
     python third_eye_app.py --source clip.mp4
     python third_eye_app.py --headless --seconds 30
+    python third_eye_app.py --incidents     # also save event-triggered incident clips
 Keys: Q quit, F fullscreen, D demo/debug view, 1-4 open a recently seen
 object, 0 / X close it.
 """
@@ -48,7 +49,7 @@ from thirdeye.ui.dashboard import Dashboard, alert_priority  # noqa: E402
 WINDOW_NAME = "Third Eye"
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Third Eye live event intelligence")
     parser.add_argument("--source", help="video file to replay instead of the CSI camera")
     parser.add_argument("--headless", action="store_true", help="no window (benchmark / SSH)")
@@ -74,7 +75,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="run capture+YOLO in the main loop instead of a worker thread (fallback)",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--incidents",
+        action="store_true",
+        help="save event-triggered incident clips (5 s before to 12 s after) under data/incidents/",
+    )
+    return parser.parse_args(argv)
 
 
 class SafeStage:
@@ -259,6 +265,29 @@ class FrameSource:
             self._thread.join(timeout=3.0)
 
 
+def start_incident_recorder(store):
+    """Rolling pre-event buffer + clip writer threads. Only created with --incidents."""
+    from thirdeye.recording import IncidentRecorder
+
+    recorder = IncidentRecorder(store=store, session_id=getattr(store, "session_id", None))
+    print(f"Incident recording ON: clips go to {os.path.join(recorder.out_dir, recorder.session_id)}/")
+
+    if store is None:
+        print("[WARN] --no-store: incident clips are saved but not linked in SQLite", file=sys.stderr)
+
+    return recorder
+
+
+def stop_incident_recorder(recorder) -> None:
+    """Finish the open clip (bounded wait) and list the clips saved this run."""
+    recorder.close()
+    clips = recorder.history(limit=1000)
+    print(f"Incident clips this run: {len(clips)}")
+
+    for clip in reversed(clips):
+        print(f"  {clip['incident_id']} {clip['status']:<9} {clip['duration']:5.1f}s  {clip['file_path']}")
+
+
 def print_event(event: dict) -> None:
     stamp = time.strftime("%H:%M:%S", time.localtime(event["timestamp"]))
     print(f"[{stamp}] {event['severity'].upper():<7} {event['event_type']:<22} {event['message']}")
@@ -268,8 +297,8 @@ def _raise_interrupt(signum, frame):
     raise KeyboardInterrupt
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     # Always run cleanup (camera release, DB close) on Ctrl+C or SIGTERM,
     # even when launched from a non-interactive shell.
     signal.signal(signal.SIGINT, signal.default_int_handler)
@@ -296,11 +325,15 @@ def main() -> int:
     dashboard = Dashboard(mode="debug" if args.debug else settings.DASHBOARD_DEFAULT_MODE)
     store = None if args.no_store else SQLiteEventStore(settings.EVENT_DB_PATH)
     memory = EntityMemory(store=store, session_id=getattr(store, "session_id", None))
+    incidents = start_incident_recorder(store) if args.incidents else None
 
     stages = {
         name: SafeStage(name)
         for name in ("filter", "tracking", "zones", "events", "relationships", "memory", "store", "dashboard")
     }
+
+    if incidents is not None:
+        stages["incidents"] = SafeStage("incidents")
 
     # Replay timing: exact capture times from a .times file written by
     # --record-raw, else --source-fps, else the file header.
@@ -401,6 +434,11 @@ def main() -> int:
                 if store is not None:
                     stages["store"].run(store.write_many, events)
 
+            if incidents is not None:
+                # The clean camera frame (the dashboard draws on its own canvas).
+                stages["incidents"].run(incidents.push_frame, frame, now)
+                stages["incidents"].run(incidents.on_events, events, now)
+
             alerts = stages["events"].run(event_engine.active_alerts, world, now, default=[])
             alerts += stages["relationships"].run(associations.active_alerts, world, now, default=[])
             alerts.sort(key=alert_priority)
@@ -484,6 +522,10 @@ def main() -> int:
             raw_times.close()
 
         stages["memory"].run(memory.close)
+
+        if incidents is not None:
+            # Before store.close(): the clip writer records the final clip status there.
+            SafeStage("incidents").run(stop_incident_recorder, incidents)
 
         if store is not None:
             store.close()
